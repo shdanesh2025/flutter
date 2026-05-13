@@ -1,0 +1,80 @@
+name: Build and Push Debug APK
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'apks/**'               # avoid infinite loop when we push the APK
+  workflow_dispatch:            # allow manual runs
+
+permissions:
+  contents: write               # needed to commit the APK back
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24'        # latest stable at time of writing
+          cache: true                    # caches the Flutter SDK
+
+      # ---------- Create the Flutter project (only on first run) ----------
+      - name: Bootstrap project if needed
+        run: |
+          if [ ! -f lib/main.dart ]; then
+            flutter create --project-name myapp --org com.example .
+            # set minimum Android version to 8 (API 26)
+            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 26/' android/app/build.gradle
+            # commit the whole Flutter scaffold so it becomes part of the repo
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "Scaffold Flutter project [skip ci]" || true
+            git push
+          fi
+
+      # ---------- Cache Dart packages ----------
+      - name: Cache Dart packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Install Dart dependencies
+        run: flutter pub get
+
+      # ---------- Cache Gradle (inside the Android module) ----------
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          build-root-directory: android
+
+      # ---------- Build the debug APK ----------
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      # ---------- Copy to desired location and push ----------
+      - name: Push APK to repo
+        run: |
+          mkdir -p apks
+          cp build/app/outputs/flutter-apk/app-debug.apk apks/myapp_debug.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add apks/myapp_debug.apk
+          git commit -m "Update debug APK [skip ci]" || echo "No changes"
+          git push
